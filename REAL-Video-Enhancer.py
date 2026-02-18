@@ -1,13 +1,14 @@
 from src.constants import CUSTOM_MODELS_PATH, IS_STEAM, MODELS_PATH, CWD,  IS_INSTALLED, TEMP_DOWNLOAD_PATH, USE_LOCAL_BACKEND, PLATFORM
 import os
-try: 
-    os.makedirs(CWD) if not os.path.exists(CWD) else None
-    # os.chdir(CWD) # need to actually chdir into the directory to have everything run correctly
-except:
-    pass
 import sys
-import os
 import time
+
+try:
+    os.makedirs(CWD, exist_ok=True)
+    # os.chdir(CWD) # need to actually chdir into the directory to have everything run correctly
+except Exception:
+    pass
+
 os.environ["PYTHONNOUSERSITE"] = "1" # Prevents python from installing packages in user site
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["NVIDIA_TENSORRT_DISABLE_INTERNAL_PIP"] = "0"
@@ -136,29 +137,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
         end_time = time.time()
         log("Render queue time: " + str(end_time - start_time))
 
-        start_time = time.time()
-        if not IS_INSTALLED:
-            for dep in Dependency.__subclasses__():
-                d = dep()
-                d.download()
-        end_time = time.time()
-        log("Dependency download time: " + str(end_time - start_time))
-        
-        #popupthread = create_independent_process(IndependentQTPopup, "Checking for dependency updates...")
-        #popupthread.start() 
-
-        start_time = time.time()
-        for dep in Dependency.__subclasses__():
-            d = dep()
-            if d.get_if_update_available():
-        #        popupthread.terminate()
-                d.update_if_updates_available()
-        end_time = time.time()
-        log("Dependency update time: " + str(end_time - start_time))
-        #try:
-        #    popupthread.terminate()
-        #except Exception:
-        #    pass
+        self.setupBackendDeps()
 
         start_time = time.time()
         self.backends, self.fullOutput = (
@@ -290,6 +269,24 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.switchToProcessingPage()
             self.settings.writeSetting("last_input_folder_location", str(os.path.dirname(file_to_open)))
 
+    def setupBackendDeps(self):
+        """Sets up the backend dependencies."""
+        start_time = time.time()
+        dependencies = [dep() for dep in Dependency.__subclasses__()]
+
+        if not IS_INSTALLED:
+            for d in dependencies:
+                d.download()
+        
+        log(f"Dependency download time: {time.time() - start_time}")
+
+        start_time = time.time()
+        for d in dependencies:
+            if d.get_if_update_available():
+                d.update_if_updates_available()
+        
+        log(f"Dependency update time: {time.time() - start_time}")
+
     def QConnect(self):
         # connect buttons to switch menus
         self.homeBtn.clicked.connect(self.switchToHomePage)
@@ -304,6 +301,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
     def renderPreview(self):
         self.renderQueue.clear()
         renderOptions = self.getCurrentRenderOptions()
+        if renderOptions == 1:
+            return
         renderOptions.outputPath = os.path.join(TEMP_DOWNLOAD_PATH, f"{os.path.basename(renderOptions.inputFile)}_preview.mkv")
         renderOptions.startTime = self.startTimeSpinBox.value()
         FileHandler().removeFile(renderOptions.outputPath)
@@ -646,10 +645,12 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
         if "{MULTIPLE_FILES}" in input_file.strip().replace(" ", ""):
             output_path = os.path.dirname(output_path)
-            for video in self.batchVideos:
-                videoHandler = VideoLoader(video)
-                videoHandler.loadVideo()
-                videoHandler.getData()
+            for videoHandler in self.batchVideos:
+                # videoHandler is now the cached VideoLoader object
+                if not hasattr(videoHandler, 'width'): # Ensure data is loaded
+                     videoHandler.getData()
+                
+                videoPath = videoHandler.inputFile
                 self.videoWidth = videoHandler.width
                 self.videoHeight = videoHandler.height
                 self.videoFps = videoHandler.fps
@@ -666,7 +667,7 @@ class MainWindow(QMainWindow, Ui_MainWindow):
 
                 # set output_path for checking
                 default_output_path = self.setDefaultOutputFile(
-                    video, output_path
+                    videoPath, output_path
                 )
 
                 # check if file already exists in renderQueue
@@ -675,8 +676,8 @@ class MainWindow(QMainWindow, Ui_MainWindow):
                     continue
 
                 renderOptions = self.getCurrentRenderOptions(
-                    input_file=video,
-                    output_path=self.setDefaultOutputFile(video, output_path),
+                    input_file=videoPath,
+                    output_path=self.setDefaultOutputFile(videoPath, output_path),
                 )
                 if renderOptions == 1:
                     return
@@ -756,10 +757,9 @@ class MainWindow(QMainWindow, Ui_MainWindow):
             self.outputFileText.setEnabled(False)
             for file in os.listdir(inputFile):
                 video = os.path.join(inputFile, file)
-                videoHandler = VideoLoader(video)
-                videoHandler.loadVideo()
+                videoHandler.getData() # Pre-load data 
                 if videoHandler.isValidVideo():
-                   self.batchVideos.append(video)
+                   self.batchVideos.append(videoHandler)
             if self.batchVideos == 0:
                 NotificationOverlay("No valid videos found in the selected folder!", self, timeout=1500)
                 return
